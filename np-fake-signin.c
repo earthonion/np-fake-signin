@@ -1,5 +1,7 @@
-/* NP Fake Signin: Write NP files + Patch signin state + Set registry */
-/* config.dat is generated at runtime using existing username + account_id */
+/*
+ * NP Fake Signin (by earthonion)
+ * Requires offline activation via offact (https://github.com/ps5-payload-dev/offact)
+ */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +21,7 @@
 #include "include/token_dat.h"
 #endif
 #include "include/config_dat.h"
+#include "hmac_md5.h"
 
 
 #define ORBIS_USER_SERVICE_MAX_LOGIN_USERS 4
@@ -52,14 +55,17 @@ static void notify(const char *fmt, ...) {
     sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
 }
 
-/* Debug functions for memory patching */
+#ifndef PS5
+/* Debug functions for memory patching (PS4 only) */
 int mdbg_copyout(int pid, unsigned long addr, void *buf, unsigned long len);
 int mdbg_copyin(int pid, void *buf, unsigned long addr, unsigned long len);
+#endif
 
 /* Registry manager */
 int32_t sceRegMgrSetInt(uint32_t key, int32_t value);
 int32_t sceRegMgrSetStr(uint32_t key, const char *value, size_t size);
 int32_t sceRegMgrSetBin(uint32_t key, const void *value, size_t size);
+int32_t sceRegMgrGetStr(uint32_t key, char *value, size_t size);
 int32_t sceRegMgrGetBin(uint32_t key, void *value, size_t size);
 
 /* Registry keys from config.dat */
@@ -96,6 +102,16 @@ int32_t sceRegMgrGetBin(uint32_t key, void *value, size_t size);
 /* Runtime config.dat buffer - patched per-user */
 static unsigned char cfg[sizeof(config_dat)];
 
+#ifndef PS5
+/* Runtime account.dat buffer - patched per-user */
+static unsigned char acct_buf[sizeof(account_dat)];
+
+static const uint8_t hmac_key[16] = {
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+};
+#endif
+
 static void patch_str(unsigned char *buf, int offset, const char *str, int max_len) {
     memset(&buf[offset], 0, max_len);
     int len = strlen(str);
@@ -124,17 +140,53 @@ static void build_config(const char *username, const uint8_t *account_id) {
 
         char np_email[65] = {0};
         snprintf(np_email, sizeof(np_email), "%s@a8.%s.np.playstation.net", username, country);
+
+        /* Patch email at 0x108 (must match other fields for persistence) */
+        patch_str(cfg, 0x108, np_email, 65);
+
+        /* Patch np_email at 0x1100 */
         patch_str(cfg, 0x1100, np_email, 65);
     }
 
-    printf("    config.dat generated:\n");
-    printf("      username:   %s\n", username);
-    printf("      online_id:  %s\n", &cfg[0x1AD]);
-    printf("      account_id: %02x%02x%02x%02x%02x%02x%02x%02x\n",
+    printf("  Built config.dat for '%s' (id: %02x%02x%02x%02x%02x%02x%02x%02x)\n",
+           username,
            account_id[0], account_id[1], account_id[2], account_id[3],
            account_id[4], account_id[5], account_id[6], account_id[7]);
-    printf("      np_email:   %s\n", &cfg[0x1100]);
 }
+
+#ifndef PS5
+static void build_account(const char *online_id, const uint8_t *account_id) {
+    /*
+     * account.dat layout (224 bytes):
+     *   0x00-0x07: magic + version
+     *   0x08-0x0F: account_id (8 bytes)
+     *   0x10-0x4F: hash_token (64 bytes)
+     *   0x50:      status
+     *   0x51-0x5F: online_id (15 bytes)
+     *   0x65-0x6C: region (8 bytes)
+     *   0x75-0x76: country (2 bytes)
+     *   0x80-0x81: language (2 bytes)
+     *   0x88-0x8F: locale (8 bytes)
+     *   0xB8-0xBF: padding
+     *   0xC0-0xDF: HMAC-MD5 as ASCII hex (32 bytes) over 0x00-0xB7
+     */
+    memcpy(acct_buf, account_dat, sizeof(account_dat));
+
+    /* Patch account_id at 0x08 */
+    memcpy(&acct_buf[0x08], account_id, 8);
+
+    /* Patch online_id at 0x51 */
+    patch_str(acct_buf, 0x51, online_id, 15);
+
+    /* Recompute HMAC over 0x00-0xB7, store as ASCII hex at 0xC0 */
+    char hex[33];
+    hmac_md5_hex(hmac_key, sizeof(hmac_key), acct_buf, 0xB8, hex);
+    memcpy(&acct_buf[0xC0], hex, 32);
+
+    printf("  Built account.dat for '%s' (hmac: %.16s...)\n",
+           online_id, &acct_buf[0xC0]);
+}
+#endif
 
 static int write_file(const char *path, const unsigned char *data, size_t len) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -144,6 +196,7 @@ static int write_file(const char *path, const unsigned char *data, size_t len) {
     return (written == (ssize_t)len) ? 0 : -1;
 }
 
+#ifndef PS5
 static pid_t find_process(const char *name) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
     size_t buf_size;
@@ -161,136 +214,80 @@ static pid_t find_process(const char *name) {
     free(buf);
     return result;
 }
-
-static void write_np_files(uint32_t userId) {
-    char path[256];
-
-    /* Write auth.dat */
-    snprintf(path, sizeof(path), "/system_data/priv/home/%x/np/auth.dat", userId);
-    if (write_file(path, auth_dat, sizeof(auth_dat)) == 0) {
-        printf("    Wrote %s\n", path);
-    } else {
-        printf("    FAILED: %s\n", path);
-    }
-
-#ifndef PS5
-    /* Write account.dat (PS4 only) */
-    snprintf(path, sizeof(path), "/user/home/%x/np/account.dat", userId);
-    if (write_file(path, account_dat, sizeof(account_dat)) == 0) {
-        printf("    Wrote %s\n", path);
-    } else {
-        printf("    FAILED: %s\n", path);
-    }
-
-    /* Write token.dat (PS4 only) */
-    snprintf(path, sizeof(path), "/user/home/%x/np/token.dat", userId);
-    if (write_file(path, token_dat, sizeof(token_dat)) == 0) {
-        printf("    Wrote %s\n", path);
-    } else {
-        printf("    FAILED: %s\n", path);
-    }
 #endif
 
-    /* Write config.dat (generated at runtime) */
-    snprintf(path, sizeof(path), "/system_data/priv/home/%x/config.dat", userId);
-    if (write_file(path, cfg, sizeof(cfg)) == 0) {
-        printf("    Wrote %s\n", path);
-    } else {
-        printf("    FAILED: %s\n", path);
+static int write_np_file(uint32_t userId, const char *fmt,
+                         const unsigned char *data, size_t len, const char *label) {
+    char path[256];
+    snprintf(path, sizeof(path), fmt, userId);
+    if (write_file(path, data, len) == 0) {
+        printf("  Wrote %s\n", label);
+        return 0;
     }
+    printf("  Failed to write %s\n", label);
+    return -1;
+}
+
+static void write_np_files(uint32_t userId) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "/system_data/priv/home/%x/np", userId);
+    mkdir(dir, 0755);
+#ifndef PS5
+    snprintf(dir, sizeof(dir), "/user/home/%x/np", userId);
+    mkdir(dir, 0755);
+#endif
+
+    write_np_file(userId, "/system_data/priv/home/%x/np/auth.dat",
+                  auth_dat, sizeof(auth_dat), "auth.dat");
+#ifndef PS5
+    write_np_file(userId, "/user/home/%x/np/account.dat",
+                  acct_buf, sizeof(acct_buf), "account.dat");
+    write_np_file(userId, "/user/home/%x/np/token.dat",
+                  token_dat, sizeof(token_dat), "token.dat");
+#endif
+    write_np_file(userId, "/system_data/priv/home/%x/config.dat",
+                  cfg, sizeof(cfg), "config.dat");
 }
 
 
 static void set_registry_from_config(void) {
-    int ret;
     int32_t val;
 
-    printf("    Setting registry from config.dat...\n");
+    sceRegMgrSetStr(REG_KEY_USERNAME, (const char*)&cfg[0x04], 17);
+    sceRegMgrSetBin(REG_KEY_ACCOUNT_ID, &cfg[0x100], 8);
+    if (cfg[0x108] != 0)
+        sceRegMgrSetStr(REG_KEY_EMAIL, (const char*)&cfg[0x108], 65);
+    sceRegMgrSetStr(REG_KEY_NP_ENV, (const char*)&cfg[0x177], 17);
+    sceRegMgrSetStr(REG_KEY_ONLINE_ID, (const char*)&cfg[0x1AD], 17);
+    sceRegMgrSetStr(REG_KEY_COUNTRY, (const char*)&cfg[0x1BE], 3);
+    sceRegMgrSetStr(REG_KEY_LANGUAGE, (const char*)&cfg[0x1C1], 6);
+    sceRegMgrSetStr(REG_KEY_LOCALE, (const char*)&cfg[0x1C7], 36);
 
-    /* Username */
-    ret = sceRegMgrSetStr(REG_KEY_USERNAME, (const char*)&cfg[0x04], 17);
-    printf("      username: '%s' (ret=%d)\n", (char*)&cfg[0x04], ret);
+    memcpy(&val, &cfg[0x48], 4); sceRegMgrSetInt(REG_KEY_FLAG_1, val);
+    memcpy(&val, &cfg[0x4C], 4); sceRegMgrSetInt(REG_KEY_FLAG_3, val);
+    memcpy(&val, &cfg[0x50], 4); sceRegMgrSetInt(REG_KEY_FLAG_2, val);
+    memcpy(&val, &cfg[0x5C], 4); sceRegMgrSetInt(REG_KEY_FLAG_5C, val);
+    memcpy(&val, &cfg[0x1F4], 4); sceRegMgrSetInt(REG_KEY_FIELD_1F4, val);
+    memcpy(&val, &cfg[0x1F8], 4); sceRegMgrSetInt(REG_KEY_SIGNIN_FLAG, val);
+    memcpy(&val, &cfg[0x1FC], 4); sceRegMgrSetInt(REG_KEY_FIELD_1FC, val);
+    memcpy(&val, &cfg[0xA4], 4); sceRegMgrSetInt(REG_KEY_NP_0xA4, val);
+    memcpy(&val, &cfg[0xB4], 4); sceRegMgrSetInt(REG_KEY_NP_0xB4, val);
+    memcpy(&val, &cfg[0xD0], 4); sceRegMgrSetInt(REG_KEY_NP_0xD0, val);
+    memcpy(&val, &cfg[0xD4], 4); sceRegMgrSetInt(REG_KEY_NP_0xD4, val);
+    memcpy(&val, &cfg[0xDC], 4); sceRegMgrSetInt(REG_KEY_NP_0xDC, val);
+    memcpy(&val, &cfg[0xF4], 4); sceRegMgrSetInt(REG_KEY_NP_0xF4, val);
 
-    /* Account ID - skip for now, preserve existing */
-    /* ret = sceRegMgrSetBin(REG_KEY_ACCOUNT_ID, &cfg[0x100], 8); */
-    /* printf("      account_id (ret=%d)\n", ret); */
+    if (cfg[0x1100] != 0)
+        sceRegMgrSetStr(REG_KEY_EXT_0x1100, (const char*)&cfg[0x1100], 65);
+    if (cfg[0x1141] != 0)
+        sceRegMgrSetStr(REG_KEY_EXT_0x1141, (const char*)&cfg[0x1141], 11);
+    if (cfg[0x114C] != 0)
+        sceRegMgrSetStr(REG_KEY_EXT_0x114C, (const char*)&cfg[0x114C], 65);
 
-    /* Email */
-    if (cfg[0x108] != 0) {
-        ret = sceRegMgrSetStr(REG_KEY_EMAIL, (const char*)&cfg[0x108], 65);
-        printf("      email: '%s' (ret=%d)\n", (char*)&cfg[0x108], ret);
-    }
-
-    /* NP env */
-    ret = sceRegMgrSetStr(REG_KEY_NP_ENV, (const char*)&cfg[0x177], 17);
-    printf("      np_env: '%s' (ret=%d)\n", (char*)&cfg[0x177], ret);
-
-    /* Online ID */
-    ret = sceRegMgrSetStr(REG_KEY_ONLINE_ID, (const char*)&cfg[0x1AD], 17);
-    printf("      online_id: '%s' (ret=%d)\n", (char*)&cfg[0x1AD], ret);
-
-    /* Country/Language/Locale */
-    ret = sceRegMgrSetStr(REG_KEY_COUNTRY, (const char*)&cfg[0x1BE], 3);
-    printf("      country: '%.2s' (ret=%d)\n", (char*)&cfg[0x1BE], ret);
-    ret = sceRegMgrSetStr(REG_KEY_LANGUAGE, (const char*)&cfg[0x1C1], 6);
-    printf("      language: '%.2s' (ret=%d)\n", (char*)&cfg[0x1C1], ret);
-    ret = sceRegMgrSetStr(REG_KEY_LOCALE, (const char*)&cfg[0x1C7], 36);
-    printf("      locale: '%s' (ret=%d)\n", (char*)&cfg[0x1C7], ret);
-
-    /* Integer flags at 0x48, 0x4C, 0x50, 0x5C */
-    memcpy(&val, &cfg[0x48], 4);
-    sceRegMgrSetInt(REG_KEY_FLAG_1, val);
-    memcpy(&val, &cfg[0x4C], 4);
-    sceRegMgrSetInt(REG_KEY_FLAG_3, val);
-    memcpy(&val, &cfg[0x50], 4);
-    sceRegMgrSetInt(REG_KEY_FLAG_2, val);
-    memcpy(&val, &cfg[0x5C], 4);
-    sceRegMgrSetInt(REG_KEY_FLAG_5C, val);
-
-    /* Field 0x1F4 */
-    memcpy(&val, &cfg[0x1F4], 4);
-    ret = sceRegMgrSetInt(REG_KEY_FIELD_1F4, val);
-    printf("      field_0x1F4: %d (ret=%d)\n", val, ret);
-
-    /* CRITICAL: Signin flag at 0x1F8 */
-    memcpy(&val, &cfg[0x1F8], 4);
-    ret = sceRegMgrSetInt(REG_KEY_SIGNIN_FLAG, val);
-    printf("      signin_flag: %d (ret=%d)\n", val, ret);
-
-    /* Field 0x1FC */
-    memcpy(&val, &cfg[0x1FC], 4);
-    sceRegMgrSetInt(REG_KEY_FIELD_1FC, val);
-
-    /* NP Manager fields */
-    memcpy(&val, &cfg[0xA4], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xA4, val);
-    memcpy(&val, &cfg[0xB4], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xB4, val);
-    memcpy(&val, &cfg[0xD0], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xD0, val);
-    memcpy(&val, &cfg[0xD4], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xD4, val);
-    memcpy(&val, &cfg[0xDC], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xDC, val);
-    memcpy(&val, &cfg[0xF4], 4);
-    sceRegMgrSetInt(REG_KEY_NP_0xF4, val);
-
-    /* Extended fields */
-    if (cfg[0x1100] != 0) {
-        ret = sceRegMgrSetStr(REG_KEY_EXT_0x1100, (const char*)&cfg[0x1100], 65);
-        printf("      np_email: '%s' (ret=%d)\n", (char*)&cfg[0x1100], ret);
-    }
-    if (cfg[0x1141] != 0) {
-        ret = sceRegMgrSetStr(REG_KEY_EXT_0x1141, (const char*)&cfg[0x1141], 11);
-        printf("      birthday: '%s' (ret=%d)\n", (char*)&cfg[0x1141], ret);
-    }
-    if (cfg[0x114C] != 0) {
-        ret = sceRegMgrSetStr(REG_KEY_EXT_0x114C, (const char*)&cfg[0x114C], 65);
-    }
-
-    (void)ret;
+    printf("  Registry updated\n");
 }
 
+#ifndef PS5
 /*
  * NpMgrUserCtx structure offsets:
  *   +0x0C = userId (4 bytes)
@@ -316,7 +313,7 @@ static void patch_signin_state(pid_t pid, uint32_t userId, int32_t new_state) {
     uint8_t one = 1;
     uint8_t zero = 0;
 
-    printf("    Scanning for NpMgrUserCtx...\n");
+    printf("  Scanning ShellCore memory...\n");
 
     for (uint64_t addr = 0x880000000ULL; addr < 0x882000000ULL; addr += 0x1000) {
         if (mdbg_copyout(pid, addr, buf, 0x1000) != 0) continue;
@@ -332,20 +329,15 @@ static void patch_signin_state(pid_t pid, uint32_t userId, int32_t new_state) {
 
                 if (ctx_userid != userId || ctx_state > 8) continue;
 
-                printf("    Found ctx at 0x%lx (state=%d)\n", ctx_addr, ctx_state);
+                printf("  Found user context at 0x%lx (state=%d)\n", ctx_addr, ctx_state);
 
-#ifdef PS5
-                /* PS5: source fields from runtime config */
+                /* Source fields from runtime config (cfg) */
                 mdbg_copyin(pid, (void*)&cfg[0x100], ctx_addr + 0x78, 8);
 
                 mdbg_copyin(pid, (void*)&cfg[0x1AD], ctx_addr + 0xC4, 17);
-                printf("    Set online_id: '%s'\n", (char*)&cfg[0x1AD]);
 
-                /* hash_token - zeros on PS5 (no account.dat) */
-                {
-                    char zero_token[64] = {0};
-                    mdbg_copyin(pid, zero_token, ctx_addr + 0xE8, 64);
-                }
+                /* hash_token from runtime account.dat */
+                mdbg_copyin(pid, (void*)&acct_buf[0x10], ctx_addr + 0xE8, 64);
 
                 mdbg_copyin(pid, &zero, ctx_addr + 0x128, 1);
                 mdbg_copyin(pid, (void*)&cfg[0x1AD], ctx_addr + 0x129, 16);
@@ -354,23 +346,6 @@ static void patch_signin_state(pid_t pid, uint32_t userId, int32_t new_state) {
                 mdbg_copyin(pid, (void*)&cfg[0x1BE], ctx_addr + 0x14D, 2);
                 mdbg_copyin(pid, (void*)&cfg[0x1C1], ctx_addr + 0x168, 2);
                 mdbg_copyin(pid, (void*)&cfg[0x1C7], ctx_addr + 0x170, 8);
-#else
-                /* PS4: source fields from account.dat */
-                mdbg_copyin(pid, (void*)&account_dat[0x08], ctx_addr + 0x78, 8);
-
-                mdbg_copyin(pid, (void*)&account_dat[0x51], ctx_addr + 0xC4, 17);
-                printf("    Set online_id: '%s'\n", (char*)&account_dat[0x51]);
-
-                mdbg_copyin(pid, (void*)&account_dat[0x10], ctx_addr + 0xE8, 64);
-
-                mdbg_copyin(pid, &zero, ctx_addr + 0x128, 1);
-                mdbg_copyin(pid, (void*)&account_dat[0x51], ctx_addr + 0x129, 16);
-
-                mdbg_copyin(pid, (void*)&account_dat[0x65], ctx_addr + 0x13E, 8);
-                mdbg_copyin(pid, (void*)&account_dat[0x75], ctx_addr + 0x14D, 2);
-                mdbg_copyin(pid, (void*)&account_dat[0x80], ctx_addr + 0x168, 2);
-                mdbg_copyin(pid, (void*)&account_dat[0x88], ctx_addr + 0x170, 8);
-#endif
 
                 /* Set access_token from auth.dat offset 0x44 */
                 mdbg_copyin(pid, (void*)&auth_dat[0x44], ctx_addr + 0x1A5, 64);
@@ -383,89 +358,98 @@ static void patch_signin_state(pid_t pid, uint32_t userId, int32_t new_state) {
                 /* Set signin state */
                 mdbg_copyin(pid, &new_state, ctx_addr + 0x10, 4);
 
-                /* Verify */
-                mdbg_copyout(pid, ctx_addr + 0x10, &ctx_state, 4);
-                printf("    Patched state: %d -> %d\n", ctx_state, new_state);
+                printf("  Signin state set to %d\n", new_state);
                 return;
             }
         }
     }
-    printf("    WARNING: ctx not found for user 0x%x\n", userId);
+    printf("  Could not find user context for 0x%x\n", userId);
 }
+#endif
 
 int main() {
-    printf("=== NP Fake Signin (by earthonion) ===\n\n");
-    notify("NP Fake Signin: Starting...");
+    printf("NP Fake Signin (by earthonion)\n");
+    printf("Offline activation by ps5-payload-dev\n\n");
 
     OrbisUserServiceInitializeParams params = { .priority = 0x2BC };
     sceUserServiceInitialize(&params);
 
-    /* Get users */
-    OrbisUserServiceLoginUserIdList userList;
-    memset(&userList, 0xFF, sizeof(userList));
-    sceUserServiceGetLoginUserIdList(&userList);
+    /* Get foreground user */
+    int32_t fgUser = -1;
+    sceUserServiceGetForegroundUser(&fgUser);
+    if (fgUser < 0) {
+        printf("No foreground user found\n");
+        notify("No user found");
+        sceUserServiceTerminate();
+        return 1;
+    }
 
-    int userCount = 0;
-    printf("[1] Logged in users:\n");
-    for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
-        if (userList.userId[i] >= 0) {
-            char name[17] = {0};
-            sceUserServiceGetUserName(userList.userId[i], name, sizeof(name));
-            printf("    0x%x (%s)\n", userList.userId[i], name);
-            userCount++;
+    uint32_t userId = (uint32_t)fgUser;
+    char userName[17] = {0};
+    sceUserServiceGetUserName(userId, userName, sizeof(userName));
+    printf("User: %s (0x%x)\n\n", userName, userId);
+
+#ifndef PS5
+    /* Find ShellCore (PS4 only - needed for memory patching) */
+    pid_t pid = find_process("SceShellCore");
+    if (pid < 0) {
+        printf("ShellCore not found\n");
+        notify("ShellCore not found");
+        sceUserServiceTerminate();
+        return 1;
+    }
+#endif
+
+    /* Check activation (requires offact to have been run separately) */
+    printf("Checking activation...\n");
+    int account_numb = 0;
+    uint64_t acct_id64 = 0;
+    for (int n = 1; n <= 16; n++) {
+        uint32_t off = (n - 1) * 65536;
+        char name[32] = {0};
+        sceRegMgrGetStr(REG_KEY_USERNAME + off, name, sizeof(name));
+        if (name[0] && strcmp(name, userName) == 0) {
+            account_numb = n;
+            break;
         }
     }
-
-    if (userCount == 0) {
-        printf("\nERROR: No users found!\n");
+    if (account_numb > 0) {
+        uint32_t off = (account_numb - 1) * 65536;
+        sceRegMgrGetBin(REG_KEY_ACCOUNT_ID + off, &acct_id64, sizeof(acct_id64));
+    }
+    if (!acct_id64) {
+        printf("  Not activated!\n");
+        notify("Not Activated! Aborting");
         sceUserServiceTerminate();
         return 1;
     }
+    printf("  Activated (slot %d, id: 0x%lx)\n", account_numb, acct_id64);
 
-    /* Find ShellCore */
-    pid_t pid = find_process("SceShellCore");
-    printf("\n[2] ShellCore PID: %d\n", pid);
-    if (pid < 0) {
-        printf("ERROR: ShellCore not found!\n");
-        sceUserServiceTerminate();
-        return 1;
-    }
+    /* Build dat files */
+    printf("\nGenerating dat files...\n");
+    uint8_t acct_id[8];
+    memcpy(acct_id, &acct_id64, 8);
+    build_config(userName, acct_id);
+#ifndef PS5
+    build_account(userName, acct_id);
+#endif
 
-    /* Process each user */
-    for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
-        if (userList.userId[i] < 0) continue;
+    /* Write dat files */
+    printf("\nWriting files...\n");
+    write_np_files(userId);
 
-        uint32_t userId = userList.userId[i];
-        char userName[17] = {0};
-        sceUserServiceGetUserName(userId, userName, sizeof(userName));
+    /* Set registry */
+    printf("\nSetting registry...\n");
+    set_registry_from_config();
 
-        printf("\n[3] Processing user 0x%x (%s)\n", userId, userName);
+#ifndef PS5
+    /* Patch signin state in memory (PS4 only) */
+    printf("\nPatching signin state...\n");
+    patch_signin_state(pid, userId, PATCH_STATE);
+#endif
 
-        /* Step 0: Read existing account_id from registry, build config.dat */
-        printf("  Step 0: Generating config.dat...\n");
-        uint8_t acct_id[8] = {0};
-        sceRegMgrGetBin(REG_KEY_ACCOUNT_ID, acct_id, 8);
-        build_config(userName, acct_id);
-
-        /* Step 1: Write dat files */
-        printf("  Step 1: Writing dat files...\n");
-        write_np_files(userId);
-
-        /* Step 2: Set registry */
-        printf("  Step 2: Setting registry...\n");
-        set_registry_from_config();
-
-        /* Step 3: Patch state */
-        printf("  Step 3: Patching signin state to %d...\n", PATCH_STATE);
-        patch_signin_state(pid, userId, PATCH_STATE);
-    }
-
-    printf("\n=== Done! ===\n");
-    printf("Registry updated. State patched to %d.\n", PATCH_STATE);
-    printf("Reboot to apply persistent changes.\n");
-
-    sleep(2);
-    notify("Reboot to apply changes!!");
+    printf("\nDone! Reboot to apply changes.\n");
+    notify("\xf0\x9f\x91\x8d Signed in! Reboot to apply.");
 
     sceUserServiceTerminate();
     return 0;
