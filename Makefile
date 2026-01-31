@@ -1,8 +1,8 @@
 PS4_HOST ?= ps4
 PS4_PORT ?= 9021
 
-# Username to patch into config.dat (override with: make all USERNAME=MyUser)
-USERNAME ?= User1
+# Username to patch into dat files (override with: make all NP_USER=MyUser)
+NP_USER ?= User1
 
 # Top-level targets: build both platforms
 all: datfiles headers build-ps4 build-ps5
@@ -44,14 +44,14 @@ LDFLAGS := -lSceUserService -lSceRegMgr -lkernel
 signin-elf: bin/np-fake-signin-$(PLATFORM).elf
 
 bin/np-fake-signin-$(PLATFORM).elf: np-fake-signin.c include/auth_dat.h include/config_dat.h
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ np-fake-signin.c $(LDFLAGS)
 
 endif
 
 # --- Shared: dat files and headers (platform-independent) ---
 
 datfiles: template/config.dat template/account.dat template/token.dat template/auth.dat gen_dat/patch_dat_files.py
-	python3 gen_dat/patch_dat_files.py patch template output $(USERNAME)
+	python3 gen_dat/patch_dat_files.py patch template output $(NP_USER)
 
 output/config.dat output/account.dat output/token.dat output/auth.dat: datfiles
 
