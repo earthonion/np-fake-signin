@@ -17,7 +17,7 @@ account.dat structure (224 bytes / 0xE0):
   0xC0: HMAC-MD5 hash (32 ASCII hex chars)
 
 Hash is computed over first 184 bytes (0xB8) using HMAC-MD5.
-Key: 00000000000000000000000000000000 (same as auth.dat)
+Key: 00000000000000000000000000000000 (replace zeroes with key ;)
 """
 
 import hmac
@@ -25,7 +25,7 @@ import hashlib
 import struct
 import sys
 
-ACCOUNT_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')
+ACCOUNT_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')  # replace zeroes with key ;)
 ACCOUNT_DAT_SIZE = 224  # 0xE0
 ACCOUNT_DAT_HASH_OFFSET = 0xC0  # Hash is at 0xC0, not 0xBC
 ACCOUNT_DAT_DATA_SIZE = 184  # 0xB8

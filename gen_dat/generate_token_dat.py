@@ -10,7 +10,7 @@ token.dat structure (368 bytes / 0x170):
   0x150: HMAC-MD5 hash (32 ASCII hex chars)
 
 Hash is computed over first 328 bytes (0x148) using HMAC-MD5.
-Key: 00000000000000000000000000000000 (same as auth.dat/account.dat)
+Key: 00000000000000000000000000000000 (replace zeroes with key ;)
 """
 
 import hmac
@@ -18,7 +18,7 @@ import hashlib
 import struct
 import sys
 
-TOKEN_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')
+TOKEN_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')  # replace zeroes with key ;)
 TOKEN_DAT_SIZE = 368  # 0x170
 TOKEN_DAT_HASH_OFFSET = 0x150
 TOKEN_DAT_DATA_SIZE = 328  # 0x148

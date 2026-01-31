@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import sys
 
-AUTH_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')
+AUTH_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')  # replace zeroes with key ;)
 AUTH_DAT_SIZE = 1200  # 0x4B0
 
 

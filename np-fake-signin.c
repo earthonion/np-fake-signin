@@ -106,6 +106,7 @@ static unsigned char cfg[sizeof(config_dat)];
 /* Runtime account.dat buffer - patched per-user */
 static unsigned char acct_buf[sizeof(account_dat)];
 
+/* replace zeroes with key ;) */
 static const uint8_t hmac_key[16] = {
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00

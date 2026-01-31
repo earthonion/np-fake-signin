@@ -14,14 +14,14 @@ Hash is computed over first 1160 bytes (0x488) using HMAC-MD5.
 Key from SceShellCore (FD82F0):
   auth_datkeymaybe dq 5E59CC6CA92F6328h, 4584A177CD201F20h
 
-In little-endian bytes: 00000000000000000000000000000000
+In little-endian bytes: 00000000000000000000000000000000 (replace zeroes with key ;)
 """
 
 import hmac
 import hashlib
 import sys
 
-AUTH_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')
+AUTH_DAT_KEY = bytes.fromhex('00000000000000000000000000000000')  # replace zeroes with key ;)
 AUTH_DAT_SIZE = 1200
 AUTH_DAT_HASH_OFFSET = 0x490
 AUTH_DAT_DATA_SIZE = 1160  # 0x488

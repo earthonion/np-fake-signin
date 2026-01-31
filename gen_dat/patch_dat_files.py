@@ -22,7 +22,7 @@ import hmac
 import hashlib
 import random
 
-# HMAC-MD5 key for dat files
+# HMAC-MD5 key for dat files - replace zeroes with key ;)
 HMAC_KEY = bytes.fromhex("00000000000000000000000000000000")
 
 
