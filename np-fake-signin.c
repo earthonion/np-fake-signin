@@ -251,17 +251,12 @@ static void write_np_files(uint32_t userId) {
 }
 
 
-static void write_registry_identity(uint32_t off) {
-    sceRegMgrSetStr(REG_KEY_USERNAME + off, (const char*)&cfg[0x04], 17);
-    sceRegMgrSetBin(REG_KEY_ACCOUNT_ID + off, &cfg[0x100], 8);
-    if (cfg[0x108] != 0)
-        sceRegMgrSetStr(REG_KEY_EMAIL + off, (const char*)&cfg[0x108], 65);
-    sceRegMgrSetStr(REG_KEY_ONLINE_ID + off, (const char*)&cfg[0x1AD], 17);
-}
-
 static void write_registry_state(uint32_t off) {
     int32_t val;
 
+    if (cfg[0x108] != 0)
+        sceRegMgrSetStr(REG_KEY_EMAIL + off, (const char*)&cfg[0x108], 65);
+    sceRegMgrSetStr(REG_KEY_ONLINE_ID + off, (const char*)&cfg[0x1AD], 17);
     sceRegMgrSetStr(REG_KEY_NP_ENV + off, (const char*)&cfg[0x177], 17);
     sceRegMgrSetStr(REG_KEY_COUNTRY + off, (const char*)&cfg[0x1BE], 3);
     sceRegMgrSetStr(REG_KEY_LANGUAGE + off, (const char*)&cfg[0x1C1], 6);
@@ -292,15 +287,11 @@ static void write_registry_state(uint32_t off) {
 static void set_registry_from_config(int account_numb) {
     uint32_t slot_off = (account_numb - 1) * 65536;
 
-    /* Write identity (username, account_id, email, online_id) to user's slot only */
-    write_registry_identity(slot_off);
-    printf("  Identity written to slot %d\n", account_numb);
-
-    /* Write sign-in state/flags to both base and per-slot */
+    /* Write state/flags to both base and per-slot (no username/account_id) */
     write_registry_state(0);
     if (account_numb > 1)
         write_registry_state(slot_off);
-    printf("  Sign-in state updated\n");
+    printf("  Registry updated (slot %d)\n", account_numb);
 }
 
 #ifndef PS5
