@@ -2,6 +2,9 @@
 
 ELF payload for PS4/PS5 that fakes PSN sign-in for the foreground user by writing NP files and patching registry/ShellCore state.
 
+> [!NOTE] **reverse sign in (sign out)**
+> Settings > Users and Accounts > Other > Sign out
+
 ## Prerequisites
 
 - Offline activation via [offact](https://github.com/ps5-payload-dev/offact) (account must have a non-zero account ID)
