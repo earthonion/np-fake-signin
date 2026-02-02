@@ -61,6 +61,9 @@ int mdbg_copyout(int pid, unsigned long addr, void *buf, unsigned long len);
 int mdbg_copyin(int pid, void *buf, unsigned long addr, unsigned long len);
 #endif
 
+/* System service */
+int32_t sceSystemServiceParamGetInt(int32_t paramId, int32_t *value);
+
 /* Registry manager */
 int32_t sceRegMgrSetInt(uint32_t key, int32_t value);
 int32_t sceRegMgrSetStr(uint32_t key, const char *value, size_t size);
@@ -121,8 +124,7 @@ static void patch_str(unsigned char *buf, int offset, const char *str, int max_l
 }
 
 static void build_config(const char *username, const uint8_t *account_id) {
-    /* Start from embedded template (has magic, version, flags, country, etc.) */
-    memcpy(cfg, config_dat, sizeof(config_dat));
+    /* cfg is pre-loaded with template + region overrides before this call */
 
     /* Patch username at 0x04 */
     patch_str(cfg, 0x04, username, 17);
@@ -431,6 +433,55 @@ int main() {
         return 1;
     }
     printf("  Activated (slot %d, id: 0x%lx)\n", account_numb, acct_id64);
+
+    /* Detect region from system language */
+    {
+        struct { const char *country; const char *lang; const char *locale; } region;
+        int32_t sys_lang = -1;
+        sceSystemServiceParamGetInt(1 /* LANG */, &sys_lang);
+
+        switch (sys_lang) {
+        case  0: region = (typeof(region)){"jp","ja","ja-JP"}; break; /* Japanese */
+        case  1: region = (typeof(region)){"us","en","en-US"}; break; /* English US */
+        case  2: region = (typeof(region)){"fr","fr","fr-FR"}; break; /* French */
+        case  3: region = (typeof(region)){"es","es","es-ES"}; break; /* Spanish */
+        case  4: region = (typeof(region)){"de","de","de-DE"}; break; /* German */
+        case  5: region = (typeof(region)){"it","it","it-IT"}; break; /* Italian */
+        case  6: region = (typeof(region)){"nl","nl","nl-NL"}; break; /* Dutch */
+        case  7: region = (typeof(region)){"pt","pt","pt-PT"}; break; /* Portuguese PT */
+        case  8: region = (typeof(region)){"ru","ru","ru-RU"}; break; /* Russian */
+        case  9: region = (typeof(region)){"kr","ko","ko-KR"}; break; /* Korean */
+        case 10: region = (typeof(region)){"tw","zh","zh-TW"}; break; /* Chinese Traditional */
+        case 11: region = (typeof(region)){"cn","zh","zh-CN"}; break; /* Chinese Simplified */
+        case 12: region = (typeof(region)){"fi","fi","fi-FI"}; break; /* Finnish */
+        case 13: region = (typeof(region)){"se","sv","sv-SE"}; break; /* Swedish */
+        case 14: region = (typeof(region)){"dk","da","da-DK"}; break; /* Danish */
+        case 15: region = (typeof(region)){"no","no","no-NO"}; break; /* Norwegian */
+        case 16: region = (typeof(region)){"pl","pl","pl-PL"}; break; /* Polish */
+        case 17: region = (typeof(region)){"br","pt","pt-BR"}; break; /* Portuguese BR */
+        case 18: region = (typeof(region)){"gb","en","en-GB"}; break; /* English GB */
+        case 19: region = (typeof(region)){"tr","tr","tr-TR"}; break; /* Turkish */
+        case 20: region = (typeof(region)){"mx","es","es-MX"}; break; /* Spanish LA */
+        case 21: region = (typeof(region)){"sa","ar","ar-SA"}; break; /* Arabic */
+        case 22: region = (typeof(region)){"ca","fr","fr-CA"}; break; /* French CA */
+        case 23: region = (typeof(region)){"cz","cs","cs-CZ"}; break; /* Czech */
+        case 24: region = (typeof(region)){"hu","hu","hu-HU"}; break; /* Hungarian */
+        case 25: region = (typeof(region)){"gr","el","el-GR"}; break; /* Greek */
+        case 26: region = (typeof(region)){"ro","ro","ro-RO"}; break; /* Romanian */
+        case 27: region = (typeof(region)){"th","th","th-TH"}; break; /* Thai */
+        case 28: region = (typeof(region)){"vn","vi","vi-VN"}; break; /* Vietnamese */
+        case 29: region = (typeof(region)){"id","id","id-ID"}; break; /* Indonesian */
+        default: region = (typeof(region)){"us","en","en-US"}; break;
+        }
+
+        printf("\nSystem language: %d -> country=%s lang=%s locale=%s\n",
+               sys_lang, region.country, region.lang, region.locale);
+
+        memcpy(cfg, config_dat, sizeof(config_dat));
+        patch_str(cfg, 0x1BE, region.country, 3);
+        patch_str(cfg, 0x1C1, region.lang, 6);
+        patch_str(cfg, 0x1C7, region.locale, 36);
+    }
 
     /* Build dat files */
     printf("\nGenerating dat files...\n");

@@ -39,7 +39,7 @@ else
 endif
 
 CFLAGS := -Wall $(PLATFORM_CFLAGS)
-LDFLAGS := -lSceUserService -lSceRegMgr -lkernel
+LDFLAGS := -lSceUserService -lSceRegMgr -lSceSystemService -lkernel
 
 signin-elf: bin/np-fake-signin-$(PLATFORM).elf
 
