@@ -1,5 +1,9 @@
 # NP Fake Signin
 
+
+> [!WARNING]
+> this project has been moved to my forjego instance! https://git.etawen.dev/earthonion/np-fake-signin/
+
 ELF payload for PS4/PS5 that fakes PSN sign-in for the foreground user by writing NP files and patching registry/ShellCore state.
 
 > [!NOTE] 
